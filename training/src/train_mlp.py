@@ -60,10 +60,26 @@ def edge_sample_weights(y: np.ndarray, power: float = 1.5) -> torch.Tensor:
     Upsample labels far from screen center so peripheral gaze is not drowned
     out by the mass of near-center samples.
     """
-    center = np.array([0.5, 0.5], dtype=np.float64)
-    dist = np.linalg.norm(y - center, axis=1) / 0.70710678
-    # Small floor so center samples still appear; power > 1 boosts corners.
-    w = np.power(0.08 + np.clip(dist, 0.0, 1.0), power)
+    return sample_weights(y, edge_power=power)
+
+
+def sample_weights(
+    y: np.ndarray,
+    edge_power: float = 0.0,
+    top_power: float = 0.0,
+) -> torch.Tensor:
+    """
+    edge_power > 0 shows corners more often; < 0 shows the middle more often.
+    top_power > 0 shows clicks near the top of the page more often.
+    """
+    w = np.ones(len(y), dtype=np.float64)
+    if edge_power != 0:
+        center = np.array([0.5, 0.5], dtype=np.float64)
+        dist = np.linalg.norm(y - center, axis=1) / 0.70710678
+        w *= np.power(0.08 + np.clip(dist, 0.0, 1.0), edge_power)
+    if top_power != 0:
+        top = 1.0 - np.clip(y[:, 1], 0.0, 1.0)
+        w *= np.power(0.08 + top, top_power)
     return torch.as_tensor(w, dtype=torch.double)
 
 
@@ -74,21 +90,49 @@ def gaze_regression_loss(
     power: float = 2.5,
     edge_weight: float = 2.0,
     error_cap: float = 0.35,
+    kind: str = "powered",
+    top_weight: float = 0.0,
+    y_scale: float = 1.0,
 ) -> torch.Tensor:
     """
     Euclidean error with:
-    - edge_weight: labels far from center count more
+    - edge_weight: labels far from center count more (negative: center counts more)
     - error_cap: once ||pred-target|| >= cap, penalty saturates — predicting
       the screen center is no longer cheaper than the wrong corner when the
       true gaze is peripheral (both get max loss if beyond the cap).
+    - kind "huber": small misses are squared, large misses grow only linearly
     """
-    err = torch.linalg.vector_norm(pred - target, dim=-1)
+    delta = pred - target
+    if y_scale != 1.0:
+        delta = torch.stack([delta[:, 0], delta[:, 1] * y_scale], dim=-1)
+    err = torch.linalg.vector_norm(delta, dim=-1)
+
+    top = (1.0 - target[:, 1]).clamp(0.0, 1.0)
+    vertical = 1.0 + top_weight * top
+
+    if kind == "pixel":
+        # Page pixels, not normalized units. x and y span different lengths.
+        sw, sh = 1294.0, 620.0
+        pix = torch.hypot((pred[:, 0] - target[:, 0]) * sw, (pred[:, 1] - target[:, 1]) * sh)
+        center = target.new_tensor([0.5, 0.5])
+        edge = torch.linalg.vector_norm(target - center, dim=-1) / 0.70710678
+        weight = (1.0 + edge_weight * edge.clamp(0.0, 1.0)) * vertical
+        return (weight * (pix / 200.0).pow(power)).mean()
+
+    if kind == "huber":
+        beta = 0.1
+        huber = torch.where(err <= beta, 0.5 * err * err / beta, err - 0.5 * beta)
+        center = target.new_tensor([0.5, 0.5])
+        edge = torch.linalg.vector_norm(target - center, dim=-1) / 0.70710678
+        weight = (1.0 + edge_weight * edge.clamp(0.0, 1.0)) * vertical
+        return (weight * huber).mean()
+
     # Saturate credit: all misses beyond `error_cap` are equally bad.
     capped = (err / max(error_cap, 1e-6)).clamp(max=1.0)
 
     center = target.new_tensor([0.5, 0.5])
     edge = torch.linalg.vector_norm(target - center, dim=-1) / 0.70710678
-    weight = 1.0 + edge_weight * edge.clamp(0.0, 1.0)
+    weight = (1.0 + edge_weight * edge.clamp(0.0, 1.0)) * vertical
     return (weight * capped.pow(power)).mean()
 
 
@@ -107,9 +151,16 @@ def train_mlp(
     loss_power: float = 2.5,
     loss_edge_weight: float = 2.0,
     loss_error_cap: float = 0.35,
+    loss_kind: str = "powered",
+    loss_top_weight: float = 0.0,
+    loss_y_scale: float = 1.0,
     rebalance_edge_power: float = 1.5,
+    rebalance_top_power: float = 0.0,
+    min_epochs: int = 0,
     device: str | None = None,
 ) -> TrainResult:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     feature_names = all_feature_names()
     x_train, y_train, scaler = prepare_xy(train_df, feature_names, fit_scaler=True)
 
@@ -120,9 +171,15 @@ def train_mlp(
     y_t = torch.tensor(y_train, dtype=torch.float32)
     dataset = TensorDataset(x_t, y_t)
 
-    if rebalance_edge_power > 0:
-        weights = edge_sample_weights(y_train, power=rebalance_edge_power)
-        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    if rebalance_edge_power != 0 or rebalance_top_power != 0:
+        weights = sample_weights(
+            y_train, edge_power=rebalance_edge_power, top_power=rebalance_top_power
+        )
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        sampler = WeightedRandomSampler(
+            weights, num_samples=len(weights), replacement=True, generator=generator
+        )
         loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
     else:
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -135,7 +192,6 @@ def train_mlp(
         x_val_t = None
         y_val_np = None
 
-    torch.manual_seed(seed)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     best_state = None
@@ -158,6 +214,9 @@ def train_mlp(
                 power=loss_power,
                 edge_weight=loss_edge_weight,
                 error_cap=loss_error_cap,
+                kind=loss_kind,
+                top_weight=loss_top_weight,
+                y_scale=loss_y_scale,
             )
             loss.backward()
             opt.step()
@@ -172,6 +231,8 @@ def train_mlp(
                 val_pred = model(x_val_t).cpu().numpy()
             val_mae = mae_metrics(y_val_np, val_pred)["mae_norm"]
             history["val_mae_norm"].append(val_mae)
+            if epoch < min_epochs:
+                continue
             if val_mae < best_val:
                 best_val = val_mae
                 best_epoch = epoch
@@ -200,6 +261,7 @@ def train_mlp(
         "best_epoch": best_epoch,
         "hidden_dims": hidden_dims,
         "loss": {
+            "kind": loss_kind,
             "power": loss_power,
             "edge_weight": loss_edge_weight,
             "error_cap": loss_error_cap,

@@ -1,0 +1,28 @@
+---
+description: Best personal gaze model so far — keep this checkpoint
+alwaysApply: true
+---
+
+# Gaze checkpoint (2026-10-02)
+
+The user called this the best result in a long while and wants it kept so later experiments can return to it. Do not replace this model while trying something else. The red dot, the training score, and the nine-dot Real column are this same prediction.
+
+## Model
+
+- File: `src/models/gaze_corner_frame.json`
+- Walker: `predictCorner` in `src/cornerProbe.ts`
+- Per-frame extra trees, 200 trees, `min_samples_leaf` 2, seed 0
+- Features from the video-mode Face Landmarker after it settles, not a still photo
+- Feature order: `m_lx`, `m_ly`, `m_rx`, `m_ry`, `p_ly`, `p_ry`, `head_yaw`, `head_pitch`, `head_roll`, `head_tx`, `head_ty`, `head_tz`, `ear_left`, `ear_right`, `ipd_px`, `face_width_px`
+- Edge stretch on the forest output: dead zone 0.22 across and 0.17 down from center, then gain 1.6 across and 1.8 down. Predictions inside that zone are unchanged.
+- Probe scores the displayed red dot (`npred`). Copied JSON key is `redDot`.
+- Table columns stay Basic T., Simulated T., Real.
+
+## Scores (leave one sitting out, mean of the 12 sittings, with the stretch)
+
+- Basic T., every photo against that photo's aim: avg 0.124, w 0.171, sqr 0.221, scr 0.170
+- Simulated T., photo closest to each bezel dot, scored against the dot: avg 0.111, w 0.202, sqr 0.259, scr 0.148
+
+## Live sitting the user wants remembered
+
+Farther chair, eye separation about 154–157 px, page 1294×620. scr 0.261, avg 0.235, w 0.315, sqr 0.352, horizontal miss 0.048, vertical miss 0.222. The sides reach the edges. The top row is on the top. The center sits about 27% down. The bottom row stops about 52–65% down. The iris height matched the far-chair photos. The head sat higher in the frame and was rolled a little more than those photos, and the forest read that as a higher gaze.

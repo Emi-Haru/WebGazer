@@ -17,6 +17,7 @@
     "dev:worker": "vite build --config vite.worker.config.js --watch --mode development",
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:worker\"",
     "demo": "npm run dev --prefix demo",
+    "collect": "npm run dev --prefix collect",
     "typecheck": "tsc --noEmit",
     "typecheck:src": "tsc",
     "build": "npm run typecheck:src && vite build --config vite.worker.config.js && vite build",
@@ -41,6 +42,7 @@
     "online"
   ],
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.14",
     "@tensorflow-models/face-landmarks-detection": "0.0.3",
     "@tensorflow/tfjs": "^3.15.0",
     "localforage": "1.7.3",

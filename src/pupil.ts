@@ -9,7 +9,7 @@ import { grayscale, type Eye } from './worker_scripts/util';
  * 3. Keep dark components that touch the sclera.
  * 4. Prefer the candidate (blob COM or circle fit) closest to the eye-rect
  *    center — rejects lash / brow / canthus blobs on the border.
- * 5. Temporal EMA across frames to damp residual noise.
+ * A single frame, same as the still photos used in training.
  */
 export type PupilDetection = [number, number];
 
@@ -23,12 +23,7 @@ const MAX_ELONG = 4.0;
 const SECTORS = 16;
 const INLIER_FRAC = 0.15;
 const MIN_INLIERS = 5;
-/** Temporal EMA on successive frames (1 = no memory, 0 = freeze). */
-const SMOOTH_ALPHA = 0.35;
 const REFIT_ITERS = 2;
-
-let prevPupilLeft: PupilDetection | null = null;
-let prevPupilRight: PupilDetection | null = null;
 
 export const fillPolygonMask = (
   width: number,
@@ -658,26 +653,9 @@ export const getPupils = (eyesObj: { left: Eye; right: Eye }): { left: Eye; righ
     const eye = eyesObj[side];
     if (!eye.patch || eye.width <= 0 || eye.height <= 0) continue;
     const g = grayscale(eye.patch.data, eye.width, eye.height);
-    const raw = getSinglePupil(g, eye.width, eye.height, eye.eyelidMask ?? null);
-    // Eyes are reallocated every frame — keep EMA state on this module.
-    const prev = side === 'left' ? prevPupilLeft : prevPupilRight;
-    const smoothed: PupilDetection = prev
-      ? [
-        SMOOTH_ALPHA * raw[0] + (1 - SMOOTH_ALPHA) * prev[0],
-        SMOOTH_ALPHA * raw[1] + (1 - SMOOTH_ALPHA) * prev[1]
-      ]
-      : raw;
-    eye.pupil = smoothed;
-    if (side === 'left') prevPupilLeft = smoothed;
-    else prevPupilRight = smoothed;
+    eye.pupil = getSinglePupil(g, eye.width, eye.height, eye.eyelidMask ?? null);
   }
   return eyesObj;
-};
-
-/** Call if face tracking drops, so the next lock does not blend with a stale position. */
-export const resetPupilSmoothing = (): void => {
-  prevPupilLeft = null;
-  prevPupilRight = null;
 };
 
 export const pupilCenterInPatch = (pupil: PupilDetection): [number, number] => pupil;

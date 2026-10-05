@@ -19,26 +19,34 @@ def export_checkpoint(pt_path: Path, out_path: Path) -> None:
     state = ckpt["state_dict"]
 
     layers: list[dict] = []
-    i = 0
-    while f"backbone.{i}.weight" in state:
-        w = state[f"backbone.{i}.weight"]
-        b = state[f"backbone.{i}.bias"]
+    weight_idxs = sorted(
+        int(key.split(".")[1])
+        for key in state
+        if key.startswith("backbone.") and key.endswith(".weight")
+    )
+    cursor = 0
+    while cursor < len(weight_idxs):
+        idx = weight_idxs[cursor]
+        weight = state[f"backbone.{idx}.weight"]
+        if weight.ndim != 2:
+            cursor += 1
+            continue
+        ln_idx = weight_idxs[cursor + 1]
         layers.append(
             {
                 "type": "linear",
-                "weight": _tensor_to_list(w),
-                "bias": _tensor_to_list(b),
+                "weight": _tensor_to_list(weight),
+                "bias": _tensor_to_list(state[f"backbone.{idx}.bias"]),
             }
         )
-        ln_i = i + 1
         layers.append(
             {
                 "type": "layernorm",
-                "weight": _tensor_to_list(state[f"backbone.{ln_i}.weight"]),
-                "bias": _tensor_to_list(state[f"backbone.{ln_i}.bias"]),
+                "weight": _tensor_to_list(state[f"backbone.{ln_idx}.weight"]),
+                "bias": _tensor_to_list(state[f"backbone.{ln_idx}.bias"]),
             }
         )
-        i += 4  # Linear, LayerNorm, GELU, Dropout
+        cursor += 2
 
     layers.append(
         {

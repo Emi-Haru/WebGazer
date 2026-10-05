@@ -13,6 +13,7 @@ import { GazeDot } from './GazeDot';
 import { FaceFeedback } from './FaceFeedback';
 import { GazeTrail } from './GazeTrail';
 import { SaveManager } from './SaveManager';
+import { liveSampleFromEyes, predictCorner } from './cornerProbe';
 export { isBrowserCompatible } from './dom_util';
 
 /**
@@ -51,6 +52,8 @@ export type WebGazerOptions = {
   useCalibration: boolean | 'move' | 'click';
   /** Vertical crop of eyelid bbox before pupil search (0–1). Default 1.0 */
   eyePatchHeightRatio?: number;
+  /** Drive the gaze dot from the eye-corner model instead of the regression. */
+  cornerGaze?: boolean;
 };
 
 /**
@@ -111,12 +114,25 @@ export class WebGazer {
     videoConstraints: { width: { min: 320, ideal: 640, max: 1920 }, height: { min: 240, ideal: 480, max: 1080 }, facingMode: 'user' },
     saveDataAcrossSessions: true,
     useCalibration: true,
-    trackEye: 'both'
+    trackEye: 'both',
+    cornerGaze: false
   };
 
   lastEyePatches: EyesData | undefined = undefined;
 
   private mouseMoveClock = performance.now();
+
+  /** This frame alone, same function the nine-click probe scores. */
+  private cornerPoint (eyes: EyesData): Point | null {
+    const sample = liveSampleFromEyes(eyes);
+    if (!sample) return null;
+    const predicted = predictCorner([sample]);
+    if (!predicted) return null;
+    return {
+      x: predicted[0].x * window.innerWidth,
+      y: predicted[0].y * window.innerHeight
+    };
+  }
 
   /**
    * Creates a new WebGazer instance.
@@ -370,7 +386,9 @@ export class WebGazer {
       const eyeFeatures = await this.tracker?.getEyePatches();
       this.lastEyePatches = eyeFeatures;
       if (this.faceFeedback && eyeFeatures) this.faceFeedback.update(eyeFeatures);
-      const prediction = eyeFeatures && this.regression.predict(eyeFeatures);
+      const prediction = this.params.cornerGaze
+        ? eyeFeatures && this.cornerPoint(eyeFeatures)
+        : eyeFeatures && this.regression.predict(eyeFeatures);
       if (prediction) {
         this.smoothingVals.push(prediction);
         const { x, y } = this.smoothingVals.data.reduce((acc, val) => ({

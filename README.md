@@ -60,6 +60,15 @@ npm install
 npm run demo
 ```
 
+### Collect personal training samples
+
+A click-to-record tool lives in `collect/`. On each click it saves a webcam face frame plus the click coordinates. Export a ZIP and unzip it into `training/data/personal/raw/`.
+
+```bash
+npm install --prefix collect
+npm run collect
+```
+
 To build the library only:
 
 ```bash

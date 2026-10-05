@@ -163,6 +163,10 @@ def build_manifest(config: dict) -> pd.DataFrame:
             tasks = config["datasets"]["eott"].get("tasks") or None
             parts.append(build_eott_manifest(eott_raw, manifest_path, tasks=tasks))
 
+    personal_manifest = ROOT / "data" / "personal" / "manifest.parquet"
+    if personal_manifest.is_file():
+        parts.append(pd.read_parquet(personal_manifest))
+
     if not parts:
         raise SystemExit(
             "No raw data found. Run: python scripts/download_datasets.py --all"
@@ -186,19 +190,27 @@ def main() -> None:
     rows_out: list[dict] = []
     stride = config["extraction"]["eott_frame_stride"]
     flip_horizontal = bool(config["extraction"].get("flip_horizontal", False))
-    stats = {"gazet_ok": 0, "gazet_skip": 0, "eott_ok": 0, "eott_skip": 0}
+    stats = {
+        "gazet_ok": 0,
+        "gazet_skip": 0,
+        "eott_ok": 0,
+        "eott_skip": 0,
+        "personal_ok": 0,
+        "personal_skip": 0,
+    }
 
     with FaceMeshExtractor() as extractor:
         for _, row in tqdm(manifest.iterrows(), total=len(manifest), desc="extract"):
-            if row["dataset"] == "gazet":
+            if row["dataset"] in ("gazet", "personal"):
                 out = _process_gazet_image(
                     row, extractor, feat_cfg, feature_names, flip_horizontal
                 )
+                key = "gazet" if row["dataset"] == "gazet" else "personal"
                 if out:
                     rows_out.append(out)
-                    stats["gazet_ok"] += 1
+                    stats[f"{key}_ok"] += 1
                 else:
-                    stats["gazet_skip"] += 1
+                    stats[f"{key}_skip"] += 1
             elif row["dataset"] == "eott":
                 batch = _process_eott_video(
                     row, extractor, feat_cfg, feature_names, stride, flip_horizontal

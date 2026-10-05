@@ -1,6 +1,5 @@
-import { load, SupportedPackages } from '@tensorflow-models/face-landmarks-detection';
-import type { FaceLandmarksDetector } from '@tensorflow-models/face-landmarks-detection';
-import { getPupils, pupilCenterInPatch, eyelidPolygonFromArcs, fillPolygonMask, resetPupilSmoothing } from './pupil';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { getPupils, pupilCenterInPatch, eyelidPolygonFromArcs, fillPolygonMask } from './pupil';
 import { getVideoContentMapping, mapVideoPointToElement } from './videoLayout';
 import {
   getEyeFeats,
@@ -82,11 +81,42 @@ export type TFFaceMeshOptions = {
   eyePatchHeightRatio?: number;
 };
 
+/**
+ * MediaPipe Face Landmarker, same 478-point mesh as training.
+ * x and z are scaled by the frame width, y by the height, matching
+ * training/src/facemesh_extractor.py.
+ */
+const TASKS_VERSION = '0.10.14';
+const TASKS_WASM =
+  `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
+const FACE_LANDMARKER_MODEL =
+  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+
+const createFaceLandmarker = async (delegate: 'GPU' | 'CPU'): Promise<FaceLandmarker> => {
+  const fileset = await FilesetResolver.forVisionTasks(TASKS_WASM);
+  return FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: FACE_LANDMARKER_MODEL,
+      delegate
+    },
+    // VIDEO tracking settles to a different iris height than a still photo.
+    // The corner model is trained on that settled reading.
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minFacePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: false
+  });
+};
+
 export class TFFaceMesh {
   name = 'TFFaceMesh';
 
-  private modelPromise: Promise<FaceLandmarksDetector>;
-  private model: FaceLandmarksDetector | null = null;
+  private modelPromise: Promise<void>;
+  private landmarker: FaceLandmarker | null = null;
+  private lastTimestampMs = -1;
   private mirrorVideo = false;
   private canvas: HTMLCanvasElement | null = null;
   /** Offscreen canvas used to sample eye ImageData from the video frame. */
@@ -104,15 +134,15 @@ export class TFFaceMesh {
     options: TFFaceMeshOptions = {}
   ) {
     this.eyePatchHeightRatio = options.eyePatchHeightRatio ?? EYE_PATCH_HEIGHT_RATIO;
-    // face-landmarks-detection@0.0.3 — latest 0.x; 1.x migration deferred.
-    // Iris model kept for 478-landmark topology (eye arc index 466); pupil is still from patches.
-    this.modelPromise = load(
-      SupportedPackages.mediapipeFacemesh,
-      { maxFaces: 1, shouldLoadIrisModel: true }
-    ).then(model => {
-      this.model = model;
-      return model;
-    });
+    this.modelPromise = createFaceLandmarker('GPU').then(
+      landmarker => {
+        this.landmarker = landmarker;
+      },
+      async (gpuError: unknown) => {
+        console.warn('Face landmarker GPU failed, using CPU', gpuError);
+        this.landmarker = await createFaceLandmarker('CPU');
+      }
+    );
     this.videoElement = videoElement;
     this.trackEye = trackEye;
     this.resizeObserver = new ResizeObserver(() => this.updateCanvasSize());
@@ -121,7 +151,7 @@ export class TFFaceMesh {
   }
 
   /** Resolves when the face landmark model finished loading. */
-  whenReady = (): Promise<FaceLandmarksDetector> => this.modelPromise;
+  whenReady = (): Promise<void> => this.modelPromise;
 
   setVideoElement (videoElement: HTMLVideoElement): void {
     this.resizeObserver.unobserve(this.videoElement);
@@ -138,25 +168,32 @@ export class TFFaceMesh {
     const videoH = this.videoElement.videoHeight;
     if (!videoW || !videoH) return;
 
-    const model = this.model ?? await this.modelPromise;
-    const predictions = await model.estimateFaces({
-      input: this.videoElement,
-      returnTensors: false,
-      flipHorizontal: false,
-      predictIrises: true
-    });
-    if (!predictions.length) {
+    const landmarker = this.landmarker ?? await this.modelPromise.then(() => this.landmarker);
+    if (!landmarker) return;
+
+    let timestamp = Math.round(performance.now());
+    if (timestamp <= this.lastTimestampMs) timestamp = this.lastTimestampMs + 1;
+    this.lastTimestampMs = timestamp;
+
+    let landmarks;
+    try {
+      landmarks = landmarker.detectForVideo(this.videoElement, timestamp).faceLandmarks[0];
+    } catch (err) {
+      console.warn('Face landmarker frame failed', err);
       this.clearFaceOverlay();
-      resetPupilSmoothing();
+      return;
+    }
+    if (!landmarks?.length) {
+      this.clearFaceOverlay();
       return;
     }
 
-    const prediction = predictions[0];
-    if (prediction.kind === 'MediaPipePredictionTensors') return;
-
-    const positions: [number, number, number][] = (prediction.scaledMesh as [number, number, number][]).map(
-      ([x, y, z]) => [x, y, z]
-    );
+    // Match training/src/facemesh_extractor.py: x and z by width, y by height.
+    const positions: [number, number, number][] = landmarks.map((p) => [
+      p.x * videoW,
+      p.y * videoH,
+      p.z * videoW
+    ]);
     if (!positions.length) return;
 
     const fit = getComputedStyle(this.videoElement).objectFit || 'fill';
@@ -245,7 +282,8 @@ export class TFFaceMesh {
   dispose = (): void => {
     this.hideFaceOverlay();
     this.resizeObserver.disconnect();
-    this.model = null;
+    this.landmarker?.close();
+    this.landmarker = null;
   };
 
   showFaceOverlay = (mirrorVideo = false): void => {
