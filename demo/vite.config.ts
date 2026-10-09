@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      webgazer: resolve(__dirname, '../src/index.ts')
+      webgazer: resolve(__dirname, '../src/index.ts'),
+      'gaze-model-source': resolve(__dirname, '../src/gazeModelLocal.ts')
     }
   },
   server: {

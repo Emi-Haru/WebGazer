@@ -41,6 +41,8 @@ www/webgazer.js
 training/data/
 training/checkpoints/
 training/.venv/
+collect/public/gaze-model-a
+collect/public/gaze-model-b
 docs/
 dist/*.map
 www/webgazer.js

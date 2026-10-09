@@ -1,0 +1,53 @@
+name: Deploy collector
+on:
+  push:
+    branches: [refactor-and-fixes]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm ci
+        working-directory: collect
+      - name: Split the red-dot model for Pages
+        run: |
+          if ! curl -fsSL -o /tmp/gaze_corner_frame.json \
+            https://github.com/Sharcoux/WebGazer/releases/download/collector-model/gaze_corner_frame.json; then
+            echo "Release collector-model is not up yet; using the model committed in the repo."
+            cp src/models/gaze_corner_frame.json /tmp/gaze_corner_frame.json
+          fi
+          python3 - << 'PY'
+          from pathlib import Path
+          data = Path('/tmp/gaze_corner_frame.json').read_bytes()
+          mid = (len(data) + 1) // 2
+          public = Path('collect/public')
+          public.mkdir(parents=True, exist_ok=True)
+          (public / 'gaze-model-a').write_bytes(data[:mid])
+          (public / 'gaze-model-b').write_bytes(data[mid:])
+          print(f'split {len(data)} bytes into {mid} + {len(data) - mid}')
+          PY
+      - run: npm run build --prefix collect
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: collect/dist
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

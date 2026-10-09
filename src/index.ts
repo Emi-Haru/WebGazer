@@ -13,7 +13,8 @@ import { GazeDot } from './GazeDot';
 import { FaceFeedback } from './FaceFeedback';
 import { GazeTrail } from './GazeTrail';
 import { SaveManager } from './SaveManager';
-import { liveSampleFromEyes, predictCorner } from './cornerProbe';
+import { cornerModelReady, liveSampleFromEyes, predictCorner } from './cornerProbe';
+export { cornerModelReady };
 export { isBrowserCompatible } from './dom_util';
 
 /**

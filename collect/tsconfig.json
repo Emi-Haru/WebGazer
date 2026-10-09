@@ -17,7 +17,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "webgazer": ["../src/index.ts"]
+      "webgazer": ["../src/index.ts"],
+      "gaze-model-source": ["../src/gazeModelLocal.ts"]
     }
   },
   "include": ["src"]

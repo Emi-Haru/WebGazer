@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  cornerModelReady,
   WebGazer,
   type PredictionResult
 } from 'webgazer';
@@ -272,6 +273,7 @@ export function TestMode ({ onBack }: Props): JSX.Element {
     calibIgnoredRef.current = 0;
 
     try {
+      await cornerModelReady();
       const video = videoRef.current;
       if (!video) throw new Error('Camera preview not mounted.');
 

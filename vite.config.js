@@ -13,6 +13,11 @@ const bannerString = `
  `;
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'gaze-model-source': resolve(__dirname, 'src/gazeModelLocal.ts')
+    }
+  },
   build: {
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),
