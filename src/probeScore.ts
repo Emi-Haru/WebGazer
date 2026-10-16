@@ -40,12 +40,12 @@ export interface ProbeScore {
   maeNorm: number;
   maeX: number;
   maeY: number;
-  /** sum(d²) / sum(d). */
+  /** sum(d²) / sum(d). Larger misses count for more. */
   wNorm: number;
-  /** sum(d³) / sum(d²). */
-  sqrNorm: number;
   /** Mean miss with horizontal distance stretched by page width / height. */
   scrNorm: number;
+  /** sum(s²) / sum(s), where s is the screen-stretched miss used by scrNorm. */
+  wScrNorm: number;
   points: ProbeScorePoint[];
 }
 
@@ -68,32 +68,33 @@ export interface ProbeFeatureSample {
 const summarize = (
   points: { predX: number; predY: number; targetX: number; targetY: number }[],
   aspect: number
-): Pick<ProbeScore, 'maeNorm' | 'maeX' | 'maeY' | 'wNorm' | 'sqrNorm' | 'scrNorm'> => {
+): Pick<ProbeScore, 'maeNorm' | 'maeX' | 'maeY' | 'wNorm' | 'scrNorm' | 'wScrNorm'> => {
   const n = points.length;
   let absX = 0;
   let absY = 0;
   let norm = 0;
   let screen = 0;
   let sumD2 = 0;
-  let sumD3 = 0;
+  let sumS2 = 0;
   for (const point of points) {
     const dx = point.predX - point.targetX;
     const dy = point.predY - point.targetY;
     const dist = Math.hypot(dx, dy);
+    const screenDist = Math.hypot(dx * aspect, dy);
     absX += Math.abs(dx);
     absY += Math.abs(dy);
     norm += dist;
-    screen += Math.hypot(dx * aspect, dy);
+    screen += screenDist;
     sumD2 += dist * dist;
-    sumD3 += dist * dist * dist;
+    sumS2 += screenDist * screenDist;
   }
   return {
     maeNorm: norm / n,
     maeX: absX / n,
     maeY: absY / n,
     wNorm: norm > 0 ? sumD2 / norm : 0,
-    sqrNorm: sumD2 > 0 ? sumD3 / sumD2 : 0,
-    scrNorm: screen / n
+    scrNorm: screen / n,
+    wScrNorm: screen > 0 ? sumS2 / screen : 0
   };
 };
 

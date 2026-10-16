@@ -71,6 +71,75 @@ interface MixModel {
   boost?: { x: BoostHead, y: BoostHead, share: Record<string, number> };
   wide?: { x: BoostHead, y: BoostHead, share: Record<string, number> };
   stack?: { x: BoostHead, y: BoostHead, share: Record<string, number> };
+  head_mix?: Record<string, { x: Record<string, number>, y: Record<string, number> }>;
+  session_fix?: Record<string, SessionFix>;
+  session_close?: Record<string, SessionFix>;
+  ridge_pull?: Record<string, RidgePull>;
+  scale_blend?: Record<string, ScaleBlend>;
+  pool_blend?: Record<string, ScaleBlend>;
+  gaze_offset?: Record<string, GazeOffset>;
+  poly_blend?: Record<string, ScaleBlend>;
+  cross_blend?: Record<string, ScaleBlend>;
+  axis_gain?: Record<string, AxisGain>;
+  tail_blend?: Record<string, ScaleBlend>;
+}
+
+interface AxisGain {
+  x_gain?: number;
+  x_dead?: number;
+  y_gain?: number;
+  y_dead?: number;
+  far_x_gain?: number;
+  far_x_dead?: number;
+  far_y_gain?: number;
+  far_y_dead?: number;
+}
+
+interface GazeOffset {
+  frac?: number;
+  close?: number[];
+  far_frac?: number;
+  far?: number[];
+  axes?: number[];
+}
+
+interface RidgeRescue {
+  group: string;
+  head_ty_above?: number;
+  head_ty_below?: number;
+  head_roll_below?: number;
+}
+
+interface RidgePull {
+  frac: number;
+  close_only?: boolean;
+  nudge?: { dx: number; x_above: number; dy: number };
+  rescue?: RidgeRescue[];
+}
+
+interface ScaleBlend {
+  coef?: number[][];
+  intercept?: number[];
+  frac: number;
+  y_frac?: number;
+  far_coef?: number[][];
+  far_intercept?: number[];
+  far_frac?: number;
+  far_y_frac?: number;
+  onto?: "close" | "far";
+  columns?: number[];
+}
+
+interface SessionFix {
+  mean: number[];
+  scale: number[];
+  coef: number[][];
+  intercept: number[];
+  mode: string;
+  margin: number;
+  axes: number[];
+  dead: number;
+  frac?: number;
 }
 
 interface FrameBundle {
@@ -84,6 +153,8 @@ interface FrameBundle {
 
 let BUNDLE: FrameBundle | null = null;
 let loading: Promise<FrameBundle> | null = null;
+const SESSION_KEEP = 80;
+const sessionRows: Record<string, number[][]> = {};
 
 const loadBundle = (): Promise<FrameBundle> => {
   if (BUNDLE) return Promise.resolve(BUNDLE);
@@ -139,6 +210,311 @@ const stretchAxis = (value: number, dead: number, gain: number): number => {
 const expand = (row: number[]): number[] => {
   const iris = row.slice(0, 6);
   return row.concat(...[row[7], row[8], row[10]].map(factor => iris.map(value => value * factor)));
+};
+
+const columnMedian = (samples: number[][], index: number): number => {
+  const values = samples.map(sample => sample[index]).sort((left, right) => left - right);
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 === 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+};
+
+const sessionQuad = (row: number[], history: number[][]): number[] => {
+  const centered = row.map((value, index) => (
+    index === 14 || index === 15 ? value : value - columnMedian(history, index)
+  ));
+  const pupil = centered.slice(0, 6);
+  return centered.concat(
+    pupil.map(value => value * value),
+    pupil.map(value => value * centered[14])
+  );
+};
+
+const walkSession = (fix: SessionFix, quad: number[]): [number, number] => {
+  const scaled = quad.map((value, index) => {
+    const scale = fix.scale[index];
+    return scale === 0 ? 0 : (value - fix.mean[index]) / scale;
+  });
+  let x = fix.intercept[0];
+  let y = fix.intercept[1];
+  for (let index = 0; index < scaled.length; index++) {
+    x += fix.coef[0][index] * scaled[index];
+    y += fix.coef[1][index] * scaled[index];
+  }
+  return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
+};
+
+const gateSession = (fix: SessionFix, x: number, y: number, otherX: number, otherY: number): [number, number] => {
+  const current = [x, y];
+  const other = [otherX, otherY];
+  const next = [x, y];
+  for (const axis of fix.axes) {
+    const further = Math.abs(other[axis] - 0.5) > Math.abs(current[axis] - 0.5) + fix.margin
+      && Math.abs(other[axis] - 0.5) >= fix.dead
+      && (fix.mode !== 'same' || Math.sign(current[axis] - 0.5) * Math.sign(other[axis] - 0.5) > 0);
+    if (further) next[axis] = other[axis];
+  }
+  return [next[0], next[1]];
+};
+
+const nearerCloseAnchor = (group: string, row: number[]): boolean => {
+  const chairs = bundle().mix?.chairs ?? [];
+  const near = chairs[0]?.anchors?.[group];
+  const far = chairs[1]?.anchors?.[group];
+  if (!near || !far) return false;
+  const closeDistance = (row[14] - near[0]) ** 2 + (row[15] - near[1]) ** 2;
+  const farDistance = (row[14] - far[0]) ** 2 + (row[15] - far[1]) ** 2;
+  return closeDistance <= farDistance;
+};
+
+/** Recenters this frame on the pose seen so far, then steps outward only when that fit reaches farther. */
+const applySession = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const fix = bundle().mix?.session_fix?.[group];
+  const closeFix = bundle().mix?.session_close?.[group];
+  if (!fix && !closeFix) return { x, y };
+  const history = sessionRows[group] ?? [];
+  history.push(row.slice());
+  if (history.length > SESSION_KEEP) history.shift();
+  sessionRows[group] = history;
+  if (history.length < 12) return { x, y };
+  const quad = sessionQuad(row, history);
+  let nextX = x;
+  let nextY = y;
+  if (fix) {
+    const [otherX, otherY] = walkSession(fix, quad);
+    [nextX, nextY] = gateSession(fix, nextX, nextY, otherX, otherY);
+  }
+  if (closeFix && nearerCloseAnchor(group, row)) {
+    const [otherX, otherY] = walkSession(closeFix, quad);
+    const [gatedX, gatedY] = gateSession(closeFix, nextX, nextY, otherX, otherY);
+    const frac = closeFix.frac ?? 1;
+    nextX = (1 - frac) * nextX + frac * gatedX;
+    nextY = (1 - frac) * nextY + frac * gatedY;
+  }
+  return { x: nextX, y: nextY };
+};
+
+const HEAD_TY = 10;
+const HEAD_ROLL = 8;
+
+/** Pull the finished point toward a pose ridge. Rescue rules fire when the router picked a neighbor. */
+const pullRidge = (
+  group: string,
+  row: number[],
+  x: number,
+  y: number,
+  routedRidge: [number, number]
+): { x: number, y: number } => {
+  const pulls = bundle().mix?.ridge_pull;
+  if (!pulls) return { x, y };
+  const own = pulls[group];
+  if (own && (!own.close_only || nearerCloseAnchor(group, row))) {
+    const [ridgeX, ridgeY] = stretchPair(routedRidge[0], routedRidge[1]);
+    let nextX = (1 - own.frac) * x + own.frac * ridgeX;
+    let nextY = (1 - own.frac) * y + own.frac * ridgeY;
+    if (own.nudge) {
+      if (nextX > own.nudge.x_above) nextX += own.nudge.dx;
+      nextY += own.nudge.dy;
+    }
+    return {
+      x: Math.min(1, Math.max(0, nextX)),
+      y: Math.min(1, Math.max(0, nextY))
+    };
+  }
+  for (const [name, cfg] of Object.entries(pulls)) {
+    const head = bundle().mix?.group_ridge[name];
+    if (!head) continue;
+    for (const rescue of cfg.rescue ?? []) {
+      if (rescue.group !== group) continue;
+      if (rescue.head_ty_above !== undefined && row[HEAD_TY] <= rescue.head_ty_above) continue;
+      if (rescue.head_ty_below !== undefined && row[HEAD_TY] >= rescue.head_ty_below) continue;
+      if (rescue.head_roll_below !== undefined && row[HEAD_ROLL] >= rescue.head_roll_below) continue;
+      const [ridgeX, ridgeY] = stretchPair(...ridgePair(head, row));
+      return {
+        x: Math.min(1, Math.max(0, (1 - cfg.frac) * x + cfg.frac * ridgeX)),
+        y: Math.min(1, Math.max(0, (1 - cfg.frac) * y + cfg.frac * ridgeY))
+      };
+    }
+  }
+  return { x, y };
+};
+
+const scaledBlend = (
+  blend: ScaleBlend | undefined,
+  group: string,
+  row: number[],
+  x: number,
+  y: number
+): { x: number, y: number } => {
+  if (!blend) return { x, y };
+  const near = nearerCloseAnchor(group, row);
+  const coef = near ? blend.coef : blend.far_coef;
+  const intercept = near ? blend.intercept : blend.far_intercept;
+  const frac = near ? blend.frac : (blend.far_frac ?? 0);
+  const yFrac = near ? (blend.y_frac ?? frac) : (blend.far_y_frac ?? frac);
+  if (!coef || !intercept || (frac <= 0 && yFrac <= 0)) return { x, y };
+  const history = sessionRows[group] ?? [];
+  if (history.length < 12) return { x, y };
+  const width = row.length;
+  const mean = new Array<number>(width).fill(0);
+  for (const sample of history) {
+    for (let index = 0; index < width; index += 1) mean[index] += sample[index];
+  }
+  for (let index = 0; index < width; index += 1) mean[index] /= history.length;
+  const scale = new Array<number>(width).fill(0);
+  for (const sample of history) {
+    for (let index = 0; index < width; index += 1) {
+      const delta = sample[index] - mean[index];
+      scale[index] += delta * delta;
+    }
+  }
+  for (let index = 0; index < width; index += 1) scale[index] = Math.sqrt(scale[index] / history.length) || 1;
+  const hat = intercept.slice();
+  for (let axis = 0; axis < hat.length; axis += 1) {
+    for (let index = 0; index < width; index += 1) {
+      hat[axis] += coef[axis][index] * ((row[index] - mean[index]) / scale[index]);
+    }
+  }
+  return {
+    x: Math.min(1, Math.max(0, (1 - frac) * x + frac * hat[0])),
+    y: Math.min(1, Math.max(0, (1 - yFrac) * y + yFrac * hat[1]))
+  };
+};
+
+const scaleBlend = (group: string, row: number[], x: number, y: number): { x: number, y: number } =>
+  scaledBlend(bundle().mix?.scale_blend?.[group], group, row, x, y);
+
+const poolBlend = (group: string, row: number[], x: number, y: number): { x: number, y: number } =>
+  scaledBlend(bundle().mix?.pool_blend?.[group], group, row, x, y);
+
+const quadratic = (values: number[]): number[] => {
+  const expanded = values.slice();
+  for (let left = 0; left < values.length; left += 1) {
+    for (let right = left; right < values.length; right += 1) expanded.push(values[left] * values[right]);
+  }
+  return expanded;
+};
+
+const crossBlend = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const blend = bundle().mix?.cross_blend?.[group];
+  if (!blend?.coef || !blend.intercept) return { x, y };
+  const ontoClose = (blend.onto ?? "close") === "close";
+  if (ontoClose !== nearerCloseAnchor(group, row)) return { x, y };
+  return scaledBlend(
+    {
+      coef: blend.coef,
+      intercept: blend.intercept,
+      frac: blend.frac,
+      far_coef: blend.coef,
+      far_intercept: blend.intercept,
+      far_frac: blend.frac
+    },
+    group,
+    row,
+    x,
+    y
+  );
+};
+
+const polyBlend = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const blend = bundle().mix?.poly_blend?.[group];
+  if (!blend) return { x, y };
+  const near = nearerCloseAnchor(group, row);
+  const coef = near ? blend.coef : blend.far_coef;
+  const intercept = near ? blend.intercept : blend.far_intercept;
+  const frac = near ? blend.frac : (blend.far_frac ?? 0);
+  if (!coef || !intercept || frac <= 0) return { x, y };
+  const history = sessionRows[group] ?? [];
+  if (history.length < 12) return { x, y };
+  const width = row.length;
+  const mean = new Array<number>(width).fill(0);
+  for (const sample of history) {
+    for (let index = 0; index < width; index += 1) mean[index] += sample[index];
+  }
+  for (let index = 0; index < width; index += 1) mean[index] /= history.length;
+  const scale = new Array<number>(width).fill(0);
+  for (const sample of history) {
+    for (let index = 0; index < width; index += 1) {
+      const delta = sample[index] - mean[index];
+      scale[index] += delta * delta;
+    }
+  }
+  for (let index = 0; index < width; index += 1) scale[index] = Math.sqrt(scale[index] / history.length) || 1;
+  const z = quadratic(row.map((value, index) => (value - mean[index]) / scale[index]));
+  const hat = intercept.slice();
+  for (let axis = 0; axis < hat.length; axis += 1) {
+    for (let index = 0; index < z.length; index += 1) hat[axis] += coef[axis][index] * z[index];
+  }
+  return {
+    x: Math.min(1, Math.max(0, (1 - frac) * x + frac * hat[0])),
+    y: Math.min(1, Math.max(0, (1 - frac) * y + frac * hat[1]))
+  };
+};
+
+const gainAxis = (value: number, gain: number, dead: number): number => {
+  if (gain === 1) return value;
+  const offset = value - 0.5;
+  const magnitude = Math.abs(offset);
+  const extra = Math.max(magnitude - dead, 0) * (gain - 1);
+  const sign = offset === 0 ? 0 : Math.sign(offset);
+  return Math.min(1, Math.max(0, 0.5 + sign * (magnitude + extra)));
+};
+
+/** Push one axis farther from center once the other blends have finished. */
+const axisGain = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const cfg = bundle().mix?.axis_gain?.[group];
+  if (!cfg) return { x, y };
+  const near = nearerCloseAnchor(group, row);
+  return {
+    x: gainAxis(x, near ? (cfg.x_gain ?? 1) : (cfg.far_x_gain ?? 1), near ? (cfg.x_dead ?? 0) : (cfg.far_x_dead ?? 0)),
+    y: gainAxis(y, near ? (cfg.y_gain ?? 1) : (cfg.far_y_gain ?? 1), near ? (cfg.y_dead ?? 0) : (cfg.far_y_dead ?? 0))
+  };
+};
+
+const tailBlend = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const blend = bundle().mix?.tail_blend?.[group];
+  if (!blend) return { x, y };
+  const columns = blend.columns ?? row.map((_, index) => index);
+  const sliced = columns.map(index => row[index]);
+  const history = (sessionRows[group] ?? []).map(sample => columns.map(index => sample[index]));
+  const saved = sessionRows[group];
+  sessionRows[group] = history;
+  const mixed = scaledBlend(blend, group, sliced, x, y);
+  if (saved) sessionRows[group] = saved;
+  else delete sessionRows[group];
+  return mixed;
+};
+
+/**
+ * On these tilts the finished point is high on one side of the screen and low
+ * on the other. Subtract that slope. Leave-one-sitting medians from the
+ * 2026-10-13 predictions; poses whose corners got worse are omitted.
+ */
+const TILT_SHEAR: Record<string, number> = {
+  leftTilt: 0.086,
+  rightTurnLeftTilt: 0.078,
+  upLeftTilt: 0.051,
+  downLeftTilt: 0.062,
+  downRightTilt: -0.069
+};
+
+const tiltShear = (group: string, x: number, y: number): { x: number, y: number } => {
+  const beta = TILT_SHEAR[group];
+  if (!beta) return { x, y };
+  return { x, y: Math.min(1, Math.max(0, y - beta * (x - 0.5))) };
+};
+
+const gazeOffset = (group: string, row: number[], x: number, y: number): { x: number, y: number } => {
+  const cfg = bundle().mix?.gaze_offset?.[group];
+  if (!cfg) return { x, y };
+  const near = nearerCloseAnchor(group, row);
+  const frac = near ? (cfg.frac ?? 0) : (cfg.far_frac ?? 0);
+  const offset = near ? cfg.close : cfg.far;
+  if (!offset || frac <= 0) return { x, y };
+  const axes = cfg.axes ?? [0, 1];
+  return {
+    x: axes.includes(0) ? Math.min(1, Math.max(0, x + frac * offset[0])) : x,
+    y: axes.includes(1) ? Math.min(1, Math.max(0, y + frac * offset[1])) : y
+  };
 };
 
 const ridgePair = (head: RidgeHead, row: number[]): [number, number] => {
@@ -340,11 +716,52 @@ export const predictCorner = (
       y = (1 - alpha) * local.y + alpha * globalY;
     }
     const edgeMix = mix.edge_mix ?? 0;
-    if (mix.edge_forest && edgeMix) {
+    let edgePair: [number, number] | null = null;
+    if (mix.edge_forest) {
       const edge = walkForest(mix.edge_forest, row);
-      const stretched = stretchPair(edge[0], edge[1]);
-      x = Math.min(1, Math.max(0, (1 - edgeMix) * x + edgeMix * stretched[0]));
-      y = Math.min(1, Math.max(0, (1 - edgeMix) * y + edgeMix * stretched[1]));
+      edgePair = stretchPair(edge[0], edge[1]);
+      if (edgeMix) {
+        x = Math.min(1, Math.max(0, (1 - edgeMix) * x + edgeMix * edgePair[0]));
+        y = Math.min(1, Math.max(0, (1 - edgeMix) * y + edgeMix * edgePair[1]));
+      }
+    }
+    const headMix = mix.head_mix?.[group];
+    if (headMix) {
+      const bank: Record<string, [number, number]> = {
+        mixed: [x, y],
+        forest: stretchPair(forest[index][0], forest[index][1]),
+        expert: stretchPair(expert[0], expert[1]),
+        ridge: stretchPair(groupPred[0], groupPred[1])
+      };
+      if (edgePair) bank.edge = edgePair;
+      if (mix.boost) {
+        bank.edgew = stretchPair(walkBoost(mix.boost.x, row), walkBoost(mix.boost.y, row));
+      }
+      if (mix.wide) {
+        const expanded = expand(row);
+        bank.wide = stretchPair(walkBoost(mix.wide.x, expanded), walkBoost(mix.wide.y, expanded));
+      }
+      let mixedX = 0;
+      let mixedY = 0;
+      for (const [name, pair] of Object.entries(bank)) {
+        mixedX += (headMix.x[name] ?? 0) * pair[0];
+        mixedY += (headMix.y[name] ?? 0) * pair[1];
+      }
+      const session = applySession(
+        group,
+        row,
+        Math.min(1, Math.max(0, mixedX)),
+        Math.min(1, Math.max(0, mixedY))
+      );
+      const pulled = pullRidge(group, row, session.x, session.y, groupPred);
+      const scaled = scaleBlend(group, row, pulled.x, pulled.y);
+      const pooled = poolBlend(group, row, scaled.x, scaled.y);
+      const shifted = gazeOffset(group, row, pooled.x, pooled.y);
+      const curved = polyBlend(group, row, shifted.x, shifted.y);
+      const crossed = crossBlend(group, row, curved.x, curved.y);
+      const gained = axisGain(group, row, crossed.x, crossed.y);
+      const tailed = tailBlend(group, row, gained.x, gained.y);
+      return tiltShear(group, tailed.x, tailed.y);
     }
     const boost = mix.boost;
     const share = boost?.share[group] ?? 0;
@@ -371,7 +788,16 @@ export const predictCorner = (
       x = Math.min(1, Math.max(0, (1 - stackShare) * x + stackShare * stretched[0]));
       y = Math.min(1, Math.max(0, (1 - stackShare) * y + stackShare * stretched[1]));
     }
-    return { x, y };
+    const session = applySession(group, row, x, y);
+    const pulled = pullRidge(group, row, session.x, session.y, groupPred);
+    const scaled = scaleBlend(group, row, pulled.x, pulled.y);
+    const pooled = poolBlend(group, row, scaled.x, scaled.y);
+    const shifted = gazeOffset(group, row, pooled.x, pooled.y);
+    const curved = polyBlend(group, row, shifted.x, shifted.y);
+    const crossed = crossBlend(group, row, curved.x, curved.y);
+    const gained = axisGain(group, row, crossed.x, crossed.y);
+    const tailed = tailBlend(group, row, gained.x, gained.y);
+    return tiltShear(group, tailed.x, tailed.y);
   });
 };
 

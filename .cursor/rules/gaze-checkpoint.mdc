@@ -3,9 +3,9 @@ description: Best personal gaze model so far — keep this checkpoint
 alwaysApply: true
 ---
 
-# Gaze checkpoint (2026-10-02)
+# Gaze checkpoint (2026-10-12)
 
-The user called this the best result in a long while and wants it kept so later experiments can return to it. Do not replace this model while trying something else. The red dot, the training score, and the nine-dot Real column are this same prediction.
+The user called this the best result in a long while and wants it kept so later experiments can return to it. Do not replace this model while trying something else. The red dot, the training score, and the nine-dot probe all walk this file. Against the 2026-10-06 groups, improvement is +0.012 basic scr and +0.001 sim scr.
 
 ## Model
 
@@ -18,10 +18,37 @@ The user called this the best result in a long while and wants it kept so later 
 - Probe scores the displayed red dot (`npred`). Copied JSON key is `redDot`.
 - Table columns stay Basic T., Simulated T., Real.
 
-## Scores (leave one sitting out, mean of the 12 sittings, with the stretch)
+## Scores (leave one sitting out, mean of the 12 sittings)
 
-- Basic T., every photo against that photo's aim: avg 0.124, w 0.171, sqr 0.221, scr 0.170
-- Simulated T., photo closest to each bezel dot, scored against the dot: avg 0.111, w 0.202, sqr 0.259, scr 0.148
+| Group | Basic scr | Sim scr |
+|---|---:|---:|
+| center | 0.165 | 0.138 |
+| rightTurn | 0.167 | 0.170 |
+| leftTurn | 0.165 | 0.154 |
+| up | 0.154 | 0.173 |
+| down | 0.145 | 0.127 |
+| upRightTurn | 0.151 | 0.124 |
+| downRightTurn | 0.147 | 0.140 |
+| downLeftTurn | 0.160 | 0.185 |
+| upLeftTurn | 0.169 | 0.158 |
+| leftTilt | 0.160 | 0.160 |
+| rightTilt | 0.142 | 0.176 |
+| rightTurnRightTilt | 0.181 | 0.197 |
+| rightTurnLeftTilt | 0.166 | 0.167 |
+| leftTurnRightTilt | 0.169 | 0.188 |
+| leftTurnLeftTilt | 0.182 | 0.183 |
+| upRightTilt | 0.169 | 0.190 |
+| upLeftTilt | 0.177 | 0.186 |
+| downRightTilt | 0.174 | 0.161 |
+| downLeftTilt | 0.177 | 0.156 |
+| upLeftTurnLeftTilt | 0.262 | 0.315 |
+| upLeftTurnRightTilt | 0.187 | 0.218 |
+| upRightTurnLeftTilt | 0.187 | 0.232 |
+| upRightTurnRightTilt | 0.244 | 0.318 |
+| downLeftTurnLeftTilt | 0.178 | 0.187 |
+| downLeftTurnRightTilt | 0.158 | 0.175 |
+| downRightTurnLeftTilt | 0.165 | 0.178 |
+| downRightTurnRightTilt | 0.168 | 0.186 |
 
 ## Live sitting the user wants remembered
 

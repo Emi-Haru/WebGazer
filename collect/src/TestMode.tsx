@@ -54,7 +54,7 @@ const probeScores = (samples: ProbeFeatureSample[]): ProbeScore | null => {
 
 const dotScoreText = (score: ProbeScore | null): string =>
   score
-    ? `red dot scrNorm ${score.scrNorm.toFixed(3)} (avg ${score.maeNorm.toFixed(3)})`
+    ? `red dot scrNorm ${score.scrNorm.toFixed(3)} (wScr ${score.wScrNorm.toFixed(3)}, avg ${score.maeNorm.toFixed(3)})`
     : 'red dot position missing on a click';
 
 /**
@@ -66,23 +66,26 @@ const dotScoreText = (score: ProbeScore | null): string =>
 const TRAINING_ALL = {
   avgNorm: 0.124,
   wNorm: 0.171,
-  sqrNorm: 0.221,
-  scrNorm: 0.170
+  scrNorm: 0.170,
+  wScrNorm: 0.229
 } as const;
 
 const TRAINING_NINE_DOT = {
   avgNorm: 0.111,
   wNorm: 0.202,
-  sqrNorm: 0.259,
-  scrNorm: 0.148
+  scrNorm: 0.148,
+  wScrNorm: 0.263
 } as const;
 
 const SCORE_ROWS: { label: keyof typeof TRAINING_ALL; field: keyof ProbeScore }[] = [
   { label: 'avgNorm', field: 'maeNorm' },
   { label: 'wNorm', field: 'wNorm' },
-  { label: 'sqrNorm', field: 'sqrNorm' },
-  { label: 'scrNorm', field: 'scrNorm' }
+  { label: 'scrNorm', field: 'scrNorm' },
+  { label: 'wScrNorm', field: 'wScrNorm' }
 ];
+
+const trainingCell = (value: number | null): string =>
+  value == null ? '—' : value.toFixed(3);
 
 const NineDotScoreTable = ({ score }: { score: ProbeScore }): JSX.Element => (
     <table className="score-table">
@@ -98,8 +101,8 @@ const NineDotScoreTable = ({ score }: { score: ProbeScore }): JSX.Element => (
         {SCORE_ROWS.map((row) => (
           <tr key={row.label}>
             <td>{row.label}</td>
-            <td>{TRAINING_ALL[row.label].toFixed(3)}</td>
-            <td>{TRAINING_NINE_DOT[row.label].toFixed(3)}</td>
+            <td>{trainingCell(TRAINING_ALL[row.label])}</td>
+            <td>{trainingCell(TRAINING_NINE_DOT[row.label])}</td>
             <td>{Number(score[row.field]).toFixed(3)}</td>
           </tr>
         ))}

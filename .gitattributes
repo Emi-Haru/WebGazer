@@ -8,3 +8,6 @@
 *.jpg binary
 *.eot binary
 *.ttf binary
+*.npz binary -eol
+*.task binary -eol
+*.bin binary -eol

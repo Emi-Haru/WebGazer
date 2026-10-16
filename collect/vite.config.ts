@@ -16,7 +16,9 @@ export default defineConfig(({ command }) => ({
   },
   server: {
     port: 3001,
-    open: true
+    open: true,
+    // The gaze model lives in the repo's src/models, outside this package.
+    fs: { allow: [resolve(__dirname, '..')] }
   },
   optimizeDeps: {
     include: [

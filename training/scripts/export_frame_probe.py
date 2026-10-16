@@ -1,29 +1,20 @@
 #!/usr/bin/env python3
-"""Train the red-dot forest on the same face reading the page uses.
+"""Shared face reading and tree helpers for the red-dot model.
 
 The collect page runs MediaPipe Face Landmarker in VIDEO mode. That tracker
 settles, over a few frames, to a different iris position than a still-image
-mesh. This script feeds each training photo through that same tracker until
-it settles, then fits the per-frame forest the red dot walks.
-
-Expects the twelve center sittings already extracted to
-training/data/processed/extracted.parquet, with the JPEG paths in that
-table still pointing at the session folders under training/data/personal/raw/.
-training/models/face_landmarker.task has to be present too. The .npz beside
-this script is only a cache of those settled features; a missing cache is
-rebuilt from the photos.
+mesh. Photos are replayed through that tracker until the reading settles.
+The model file itself is written by export_corner_mix.py.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
-import pandas as pd
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 from sklearn.ensemble import ExtraTreesRegressor
@@ -40,16 +31,7 @@ from features import (  # noqa: E402
 from head_pose import estimate_head_pose  # noqa: E402
 from pupil import detect_pupil_center, eyelid_polygon_from_arcs, fill_polygon_mask  # noqa: E402
 
-def load_center_frames(parquet_path: Path) -> pd.DataFrame:
-    frame = pd.read_parquet(parquet_path)
-    frame = frame[frame.dataset == "personal"].copy()
-    frame["folder"] = frame.image_path.map(lambda p: Path(str(p)).parent.parent.name)
-    frame = frame[frame.folder.str.contains("20260929_center")].reset_index(drop=True)
-    frame["n"] = frame.folder.str.extract(r"center(\d+)$")[0].astype(int)
-    return frame
-
 MODEL = ROOT / "models" / "face_landmarker.task"
-CACHE = ROOT / "logs" / "video_settled_features.npz"
 OUT = ROOT.parent / "src" / "models" / "gaze_corner_frame.json"
 ASPECT = 1294 / 620
 N_TREES = 200
@@ -275,79 +257,3 @@ def forest_predict(trees: list[dict], rows: np.ndarray) -> np.ndarray:
             total[index] += value[node]
     return total / len(trees)
 
-
-def main() -> None:
-    frame = load_center_frames(ROOT / "data" / "processed" / "extracted.parquet").reset_index(drop=True)
-    if CACHE.exists():
-        stored = np.load(CACHE)
-        rows = stored["rows"]
-        print(f"loaded {CACHE}", flush=True)
-    else:
-        rows = extract(frame)
-        np.savez(CACHE, rows=rows, cols=np.array(FEATURE_ORDER))
-        print(f"wrote {CACHE}", flush=True)
-
-    ok = np.isfinite(rows).all(axis=1)
-    print(f"finite {int(ok.sum())}/{len(rows)}", flush=True)
-    frame = frame.loc[ok].reset_index(drop=True)
-    rows = rows[ok]
-    labels = frame[["label_x", "label_y"]].to_numpy(float)
-    sittings = frame.n.to_numpy(int)
-
-    center = (labels[:, 0] > 0.4) & (labels[:, 0] < 0.6) & (labels[:, 1] > 0.4) & (labels[:, 1] < 0.6)
-    top = labels[:, 1] < 0.15
-    bot = labels[:, 1] > 0.85
-    ly = FEATURE_ORDER.index("m_ly")
-    lx = FEATURE_ORDER.index("m_lx")
-    print(
-        f"center m_ly {np.median(rows[center, ly]):.3f}  m_lx {np.median(rows[center, lx]):.3f}  "
-        f"top m_ly {np.median(rows[top, ly]):.3f}  bot m_ly {np.median(rows[bot, ly]):.3f}",
-        flush=True,
-    )
-
-    ids = [int(value) for value in np.unique(sittings)]
-    all_scores = []
-    edge_scores = []
-    for held in ids:
-        train = sittings != held
-        model = fit_tree(rows[train], labels[train])
-        test = sittings == held
-        pred = model.predict(rows[test])
-        all_scores.append(metrics(pred, labels[test]))
-        chosen = edge_index(labels[test])
-        edge_scores.append(metrics(pred[chosen], labels[test][chosen]))
-        print(f"loo {held} scr {all_scores[-1][3]:.3f} edge {edge_scores[-1][3]:.3f}", flush=True)
-
-    all_mean = np.mean(all_scores, axis=0)
-    edge_mean = np.mean(edge_scores, axis=0)
-    print(
-        f"all avg {all_mean[0]:.3f} w {all_mean[1]:.3f} sqr {all_mean[2]:.3f} scr {all_mean[3]:.3f}",
-        flush=True,
-    )
-    print(
-        f"edge avg {edge_mean[0]:.3f} w {edge_mean[1]:.3f} sqr {edge_mean[2]:.3f} scr {edge_mean[3]:.3f}",
-        flush=True,
-    )
-
-    model = fit_tree(rows, labels)
-    exported = dump_forest(model)
-    gap = float(np.max(np.abs(forest_predict(exported, rows[:8]) - model.predict(rows[:8]))))
-    print(f"tree walk gap {gap:.6f}", flush=True)
-    if gap > 1e-3:
-        raise SystemExit("exported trees do not match sklearn")
-
-    payload = {
-        "method": "corner-iris-per-frame",
-        "feature_order": FEATURE_ORDER,
-        "aspect": ASPECT,
-        # Predictions already this far from 0.5 are pushed farther, by the
-        # excess times (gain - 1). Fit on the leave-one-sitting nine dots.
-        "edge_stretch": {"dead_x": 0.22, "dead_y": 0.17, "gain_x": 1.6, "gain_y": 1.8},
-        "trees": exported,
-    }
-    OUT.write_text(json.dumps(payload), encoding="utf-8")
-    print(f"wrote {OUT} ({OUT.stat().st_size / 1e6:.1f} MB)", flush=True)
-
-
-if __name__ == "__main__":
-    main()

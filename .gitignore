@@ -40,6 +40,8 @@ www/webgazer.js
 .idea/
 training/data/
 training/checkpoints/
+# Uncompressed red-dot model is over GitHub's 100 MB file limit. The app loads the .bin.
+src/models/gaze_corner_frame.json
 training/.venv/
 collect/public/gaze-model-a
 collect/public/gaze-model-b
