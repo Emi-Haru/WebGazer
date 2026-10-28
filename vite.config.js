@@ -1,3 +1,4 @@
+import { copyFileSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
 import { defineConfig } from 'vite';
 import banner from 'vite-plugin-banner';
@@ -15,7 +16,7 @@ const bannerString = `
 export default defineConfig({
   resolve: {
     alias: {
-      'gaze-model-source': resolve(__dirname, 'src/gazeModelLocal.ts')
+      'gaze-model-source': resolve(__dirname, 'src/gazeModelPackaged.ts')
     }
   },
   build: {
@@ -33,15 +34,21 @@ export default defineConfig({
         inlineDynamicImports: true
       }
     },
-    minify: 'terser',
-    terserOptions: {
-      keep_classnames: true,
-      keep_fnames: true,
-      mangle: false
-    }
+    minify: 'esbuild'
   },
   plugins: [
     banner(bannerString),
+    {
+      name: 'copy-gaze-model',
+      closeBundle () {
+        const destDir = resolve(__dirname, 'dist/models');
+        mkdirSync(destDir, { recursive: true });
+        copyFileSync(
+          resolve(__dirname, 'src/models/gaze_corner_frame.bin'),
+          resolve(destDir, 'gaze_corner_frame.bin')
+        );
+      }
+    },
     {
       name: 'emit-types',
       async closeBundle () {

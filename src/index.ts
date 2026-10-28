@@ -360,6 +360,15 @@ export class WebGazer {
       throw err;
     }
 
+    if (this.params.cornerGaze) {
+      try {
+        await cornerModelReady();
+      } catch (err) {
+        console.error('Failed to load corner gaze model', err);
+        throw err;
+      }
+    }
+
     if (this.params.gazeDot) this.showGazeDot();
     if (this.params.gazeTrail) this.showGazeTrail();
     if (this.params.saveDataAcrossSessions) this.saveManager.startAutoSave();

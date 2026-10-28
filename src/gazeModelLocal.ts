@@ -1,7 +1,6 @@
 /**
- * Dev and library builds read the model next to this module.
- * The bytes are gzip of gaze_corner_frame.json, named .bin so a server
- * does not decompress them before this code does.
+ * Collect / Vite-dev: load the compressed model from src/models/ next to this file.
+ * Vite must resolve this URL (no @vite-ignore) so the asset is served correctly.
  */
 export const loadGazeModel = async (): Promise<unknown> => {
   const response = await fetch(new URL('./models/gaze_corner_frame.bin', import.meta.url));

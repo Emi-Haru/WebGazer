@@ -13,6 +13,7 @@
   "scripts": {
     "clean": "rimraf dist",
     "prebuild": "npm run clean",
+    "prepare": "npm run build",
     "dev:main": "vite build --watch --mode development",
     "dev:worker": "vite build --config vite.worker.config.js --watch --mode development",
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:worker\"",
@@ -33,7 +34,8 @@
       "import": "./dist/webgazer.es.js",
       "require": "./dist/webgazer.cjs.js",
       "types": "./dist/types/index.d.ts"
-    }
+    },
+    "./models/gaze_corner_frame.bin": "./dist/models/gaze_corner_frame.bin"
   },
   "keywords": [
     "webgazer",
